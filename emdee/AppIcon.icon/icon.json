@@ -1,0 +1,42 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "srgb:0.98431,0.98039,0.97255,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "srgb:0.11765,0.11765,0.12549,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:0.11373,0.11373,0.12157,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.96078,0.96078,0.96863,1.00000"
+              }
+            }
+          ],
+          "glass": false,
+          "image-name": "md.svg",
+          "name": "Md"
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}
