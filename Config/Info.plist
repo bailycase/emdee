@@ -19,6 +19,14 @@
 	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>SUEnableDownloaderService</key>
+	<true/>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://bailycase.github.io/emdee/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>M96a4ckuM1R+3osbI6zsGsSYX6/TKSjIcQEliDllUa8=</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UTImportedTypeDeclarations</key>

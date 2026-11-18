@@ -17,6 +17,6 @@ jobs:
       - name: Checks
         run: ./Checks/run.sh
       - name: Build for Mac
-        run: xcodebuild build -scheme emdee -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO | xcbeautify
+        run: xcodebuild build -project emdee.xcodeproj -scheme 'emdee (Dev)' -destination 'generic/platform=macOS' -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO | xcbeautify
       - name: Build for iOS
-        run: xcodebuild build -scheme emdee -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO | xcbeautify
+        run: xcodebuild build -project emdee.xcodeproj -scheme 'emdee (Dev)' -destination 'generic/platform=iOS' -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO | xcbeautify

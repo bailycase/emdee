@@ -1,122 +1,286 @@
-# Push a tag such as v0.2.0 to release. The Mac app is signed with Developer ID, notarized
-# and attached to a GitHub Release; the iOS app goes to TestFlight. Secrets are listed in
-# the README under "Releasing".
+# Shepherd's release workflow, cut down to one app and one stable channel.
+#
+# - Tag vX.Y.Z: the Mac app is built arm64-only, signed with Developer ID inside-out,
+#   notarized, packaged as emdee.dmg on a GitHub Release, and published to the Sparkle feed
+#   (gh-pages, appcast.xml). The iPhone and iPad app goes to TestFlight.
+# - Manual run (gh workflow run release.yml -f testflight=true): TestFlight only, at the
+#   project's MARKETING_VERSION.
+#
+# The build number is the run number. Tags are immutable: a botched release gets the next number.
 name: Release
 
 on:
   push:
     tags: ["v*"]
-
-permissions:
-  contents: write
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: Upload the iPhone and iPad app to TestFlight
+        type: boolean
+        default: true
 
 defaults:
   run:
     shell: bash
 
 env:
-  TEAM_ID: 4J6D7M7D79
+  BUILD: ${{ github.run_number }}
 
 jobs:
   mac:
+    name: Mac app, DMG and appcast
+    if: github.ref_type == 'tag'
     runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    # Serialize publication so two tags never race on gh-pages.
+    concurrency:
+      group: appcast-publication
+      cancel-in-progress: false
+    env:
+      TAG: ${{ github.ref_name }}
+      PRODUCT: build/Build/Products/Release/emdee.app
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Version
         run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          echo "BUILD=${{ github.run_number }}" >> "$GITHUB_ENV"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tags are vX.Y.Z; got $TAG."; exit 1; }
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
-      - name: App Store Connect key
+      - name: Import Developer ID certificate
+        id: cert
         env:
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-        run: printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
-
-      - name: Developer ID certificate
-        env:
-          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
-          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
         run: |
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          password="$(uuidgen)"
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          printf '%s' "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
-          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain" login.keychain-db
-          rm "$RUNNER_TEMP/developer-id.p12"
+          [[ -n "$P12" ]] || { echo "::error::No DEVELOPER_ID_P12 secret."; exit 1; }
+          umask 077
+          security list-keychains -d user > "$RUNNER_TEMP/release-keychains.txt"
+          KEYCHAIN="$RUNNER_TEMP/release-build.keychain-db"
+          KEYCHAIN_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          python3 -c 'import os,shlex,subprocess; old=shlex.split(open(os.environ["RUNNER_TEMP"]+"/release-keychains.txt").read()); subprocess.run(["security","list-keychains","-d","user","-s",os.environ["RUNNER_TEMP"]+"/release-build.keychain-db",*old],check=True)'
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          [[ -n "$IDENTITY" ]] || { echo "::error::Imported certificate has no Developer ID identity."; exit 1; }
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
 
-      - name: Archive
+      # The Mac target sets ARCHS = arm64; the command line sets it for the package too.
+      - name: Build emdee
         run: |
-          xcodebuild archive -scheme emdee -destination 'generic/platform=macOS' \
-            -archivePath "$RUNNER_TEMP/emdee.xcarchive" \
+          xcodebuild build \
+            -project emdee.xcodeproj -scheme 'emdee (Prod)' -configuration Release \
+            -destination 'platform=macOS,arch=arm64' -derivedDataPath build \
+            -onlyUsePackageVersionsFromResolvedFile \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
-            DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" OTHER_CODE_SIGN_FLAGS=--timestamp \
             | xcbeautify
+
+      # Sparkle's prebuilt framework and helpers come universal.
+      - name: Thin to arm64
+        run: |
+          find "$PRODUCT" -type f -print0 | while IFS= read -r -d '' f; do
+            if [[ "$(file -b "$f")" == *"Mach-O universal"* ]]; then lipo "$f" -remove x86_64 -output "$f"; fi
+          done
+
+      # The guard against shipping the wrong identity: Dev's bundle id or feed would never update.
+      - name: Verify the app's identity
+        run: |
+          info="$PRODUCT/Contents/Info.plist"
+          check() { [[ "$(plutil -extract "$1" raw -o - "$info")" == "$2" ]] || { echo "::error::$1 is not $2"; exit 1; }; }
+          check CFBundleIdentifier com.bailycase.emdee
+          check CFBundleShortVersionString "$VERSION"
+          check CFBundleVersion "$BUILD"
+          check SUFeedURL https://bailycase.github.io/emdee/appcast.xml
+          if find "$PRODUCT" -type f -exec file {} + | grep -q x86_64; then
+            echo "::error::An x86_64 slice survived thinning."; exit 1
+          fi
+
+      - name: Zip dSYMs
+        continue-on-error: true
+        working-directory: build/Build/Products/Release
+        run: zip -qr "$GITHUB_WORKSPACE/emdee-dSYMs.zip" ./*.dSYM
+
+      - name: Strip debug symbols
+        run: xcrun strip -S -x "$PRODUCT/Contents/MacOS/emdee"
+
+      - name: Sign
+        run: scripts/sign-app.sh "$PRODUCT" '${{ steps.cert.outputs.identity }}' Config/emdee.entitlements
 
       - name: Notarize
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
         run: |
-          app="$RUNNER_TEMP/emdee.xcarchive/Products/Applications/emdee.app"
-          codesign --verify --strict --verbose=2 "$app"
-          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
-            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "${{ secrets.ASC_KEY_ID }}" --issuer "${{ secrets.ASC_ISSUER_ID }}"
-          xcrun stapler staple "$app"
-          spctl --assess --type execute --verbose "$app"
-          ditto -c -k --keepParent "$app" "emdee-$VERSION-mac.zip"
+          umask 077
+          printf '%s\n' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --sequesterRsrc --keepParent "$PRODUCT" notarize.zip
+          xcrun notarytool submit notarize.zip --wait \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID"
+          xcrun stapler staple "$PRODUCT"
 
-      - name: GitHub Release
+      - name: Package DMG
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          STAGE=$(mktemp -d "$RUNNER_TEMP/release-dmg.XXXXXX")
+          cp -R "$PRODUCT" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname emdee -srcfolder "$STAGE" -ov -format UDZO emdee.dmg
+          codesign --force --timestamp --sign '${{ steps.cert.outputs.identity }}' emdee.dmg
+          xcrun notarytool submit emdee.dmg --wait \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID"
+          xcrun stapler staple emdee.dmg
+          spctl --assess --type open --context context:primary-signature --verbose emdee.dmg
+          shasum -a 256 emdee.dmg
+
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "emdee-$VERSION-mac.zip" --title "emdee $VERSION" --generate-notes
+        run: |
+          assets=(emdee.dmg)
+          [[ -f emdee-dSYMs.zip ]] && assets+=(emdee-dSYMs.zip)
+          gh release create "$TAG" "${assets[@]}" --verify-tag --title "emdee $VERSION" --generate-notes
 
-  ios:
-    runs-on: macos-26
+      # The feed carries only the newest release: Sparkle offers the newest build anyway, and
+      # every older install updates straight to it. generate_appcast marks it arm64-only.
+      - name: Update appcast
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          [[ -n "$SPARKLE_PRIVATE_KEY" ]] || { echo "::error::No SPARKLE_PRIVATE_KEY secret."; exit 1; }
+          BIN=build/SourcePackages/artifacts/sparkle/Sparkle/bin
+          umask 077
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_key"
+          mkdir casts && cp emdee.dmg casts/
+          "$BIN/generate_appcast" --ed-key-file "$RUNNER_TEMP/sparkle_key" --maximum-deltas 0 \
+            --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/$TAG/" \
+            --link "https://github.com/${{ github.repository }}" \
+            -o casts/appcast.xml casts
+          grep -q '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' casts/appcast.xml
+
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git fetch origin gh-pages
+          git worktree add pages origin/gh-pages
+          cp casts/appcast.xml pages/appcast.xml
+          cd pages
+          git add appcast.xml
+          if ! git diff --cached --quiet; then
+            git commit -m "appcast: $TAG"
+            git push origin HEAD:gh-pages
+          fi
+
+      - name: Restore keychains and remove signing credentials
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, shlex, subprocess
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          old = temp / "release-keychains.txt"
+          try:
+              if old.exists():
+                  subprocess.run(["security", "list-keychains", "-d", "user", "-s", *shlex.split(old.read_text())], check=True)
+          finally:
+              keychain = temp / "release-build.keychain-db"
+              try:
+                  if keychain.exists():
+                      subprocess.run(["security", "delete-keychain", str(keychain)], check=True)
+              finally:
+                  for name in ("cert.p12", "notary.p8", "sparkle_key", "release-keychains.txt"):
+                      (temp / name).unlink(missing_ok=True)
+          PYTHON
+
+  # Archived unsigned and signed only at export with the team's cloud-managed Apple
+  # Distribution certificate, as Shepherd iOS: no .p12, no keychain. Signing the archive
+  # instead would mint an Apple Development certificate on every clean runner.
+  testflight:
+    name: iPhone and iPad app to TestFlight
+    if: github.ref_type == 'tag' || inputs.testflight
+    # iPhone Duo needs an iOS 27.1 SDK build to fill its displays; macos-26 tops out at 26.6.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      # Never a beta Xcode: App Store Connect refuses its builds.
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
-      - name: Version
+      - name: Xcode
         run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          echo "BUILD=${{ github.run_number }}" >> "$GITHUB_ENV"
+          xcodebuild -version
+          sdk=$(xcrun --sdk iphoneos --show-sdk-version)
+          IFS=. read -r major minor _ <<< "$sdk"
+          if (( major < 27 || (major == 27 && ${minor:-0} < 1) )); then
+            echo "::error::emdee iOS needs the iOS 27.1 SDK (iPhone Duo); $DEVELOPER_DIR has $sdk." && exit 1
+          fi
+          if [[ "$(realpath "$DEVELOPER_DIR")" == *[Bb]eta* ]]; then
+            echo "::error::$DEVELOPER_DIR is a beta Xcode, which App Store Connect refuses." && exit 1
+          fi
+          # A tag sets the marketing version; a manual run keeps the project's.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then echo "VERSION_SETTING=MARKETING_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
 
-      - name: App Store Connect key
-        env:
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-        run: printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
-
-      # Archive unsigned, then let the export sign with Apple's cloud-managed distribution
-      # certificate, so CI never holds or creates a signing certificate of its own.
-      - name: Archive
+      - name: Archive (unsigned)
         run: |
-          xcodebuild archive -scheme emdee -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/emdee.xcarchive" \
-            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
-            DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGNING_ALLOWED=NO \
+          xcodebuild archive \
+            -project emdee.xcodeproj -scheme 'emdee (Prod)' -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/emdee-iOS.xcarchive" -derivedDataPath build-ios \
+            -onlyUsePackageVersionsFromResolvedFile \
+            CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION="$BUILD" ${VERSION_SETTING:+"$VERSION_SETTING"} \
             | xcbeautify
 
-      - name: Upload to TestFlight
+      - name: Write the App Store Connect key
+        env:
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
         run: |
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>upload</string>
-            <key>signingStyle</key><string>automatic</string>
-            <key>teamID</key><string>$TEAM_ID</string>
-            <key>manageAppVersionAndBuildNumber</key><false/>
-          </dict>
-          </plist>
-          EOF
-          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/emdee.xcarchive" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath "$RUNNER_TEMP/export" \
+          umask 077
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/asc/AuthKey.p8"
+          if ! grep -q 'BEGIN PRIVATE KEY' "$RUNNER_TEMP/asc/AuthKey.p8"; then
+            echo "::error::APP_STORE_CONNECT_KEY_P8 must be the .p8 file's text as-is, not base64." && exit 1
+          fi
+
+      - name: Cloud-sign the TestFlight package
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/emdee-iOS.xcarchive" \
+            -exportOptionsPlist Config/ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export" \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
-            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER_ID"
+          ls "$RUNNER_TEMP/export/"*.ipa
+
+      - name: Upload to TestFlight
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app -f "$RUNNER_TEMP/export/emdee.ipa" \
+            --api-key "$KEY_ID" --api-issuer "$ISSUER_ID" --p8-file-path "$RUNNER_TEMP/asc/AuthKey.p8"
+          echo "::notice title=TestFlight::Uploaded emdee build $BUILD for internal testing."
+
+      - name: Remove the App Store Connect key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"

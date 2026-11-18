@@ -9,7 +9,12 @@ struct EmdeeApp: App {
             LibraryView()
                 .environment(recents)
         }
-        .commands { AppCommands() }
+        .commands {
+            AppCommands()
+            #if os(macOS)
+            UpdateCommands()
+            #endif
+        }
         #if os(macOS)
         .defaultSize(width: 1280, height: 800)
         #endif
