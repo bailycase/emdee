@@ -1,0 +1,27 @@
+// !$*UTF8*$!
+{
+ archiveVersion = 1;
+ classes = {};
+ objectVersion = 77;
+ objects = {
+  E00000000000000000000001 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES;}; buildConfigurationList = E00000000000000000000010; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = E00000000000000000000002; preferredProjectObjectVersion = 77; productRefGroup = E00000000000000000000004; projectDirPath = ""; projectRoot = ""; targets = (E00000000000000000000006);};
+  E00000000000000000000002 = {isa = PBXGroup; children = (E00000000000000000000003, E00000000000000000000012, E00000000000000000000004); sourceTree = "<group>";};
+  E00000000000000000000003 = {isa = PBXFileSystemSynchronizedRootGroup; path = emdee; sourceTree = "<group>";};
+  E00000000000000000000004 = {isa = PBXGroup; children = (E00000000000000000000005); name = Products; sourceTree = "<group>";};
+  E00000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.application; path = emdee.app; sourceTree = BUILT_PRODUCTS_DIR;};
+  E00000000000000000000006 = {isa = PBXNativeTarget; buildConfigurationList = E00000000000000000000011; buildPhases = (E00000000000000000000007, E00000000000000000000008, E00000000000000000000009); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (E00000000000000000000003); name = emdee; productName = emdee; productReference = E00000000000000000000005; productType = "com.apple.product-type.application";};
+  E00000000000000000000007 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+  E00000000000000000000008 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+  E00000000000000000000009 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+  E0000000000000000000000A = {isa = XCBuildConfiguration; buildSettings = {SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; ONLY_ACTIVE_ARCH = YES;}; name = Debug;};
+  E0000000000000000000000B = {isa = XCBuildConfiguration; buildSettings = {SWIFT_COMPILATION_MODE = wholemodule; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";}; name = Release;};
+  E0000000000000000000000C = {isa = XCBuildConfiguration; baseConfigurationReference = E00000000000000000000013; buildSettings = {}; name = Debug;};
+  E0000000000000000000000D = {isa = XCBuildConfiguration; baseConfigurationReference = E00000000000000000000013; buildSettings = {}; name = Release;};
+  E00000000000000000000010 = {isa = XCConfigurationList; buildConfigurations = (E0000000000000000000000A, E0000000000000000000000B); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;};
+  E00000000000000000000011 = {isa = XCConfigurationList; buildConfigurations = (E0000000000000000000000C, E0000000000000000000000D); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;};
+  E00000000000000000000012 = {isa = PBXGroup; path = Config; sourceTree = "<group>"; children = (E00000000000000000000013, E00000000000000000000014);};
+  E00000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>";};
+  E00000000000000000000014 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>";};
+ };
+ rootObject = E00000000000000000000001;
+}
