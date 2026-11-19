@@ -52,3 +52,7 @@ Run the styling, format bar, file and recents checks on a Mac:
 ```sh
 ./Checks/run.sh
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
