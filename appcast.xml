@@ -1,2 +1,16 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>emdee</title></channel></rss>
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>emdee</title>
+        <item>
+            <title>0.1.0</title>
+            <pubDate>Thu, 19 Nov 2026 03:39:20 +0000</pubDate>
+            <link>https://github.com/bailycase/emdee</link>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/bailycase/emdee/releases/download/v0.1.0/emdee.dmg" length="2548252" type="application/octet-stream" sparkle:edSignature="53L3fTzHbtcuyPjdicm5agHq8uGRFUifkWHdRkQ6k0bFcIdL6Pk8/Lv3gq6nEICW5QhAjnOhhGd/h9bemh1VBA=="/>
+        </item>
+    </channel>
+</rss>
