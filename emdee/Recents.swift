@@ -15,11 +15,6 @@ struct RecentFile: Codable, Identifiable, Hashable {
     var name: String { (path as NSString).lastPathComponent }
     @MainActor var folder: String { Self.folder(of: path) }
 
-    /// "Edited 9:41 AM · ~/Developer/emdee"
-    @MainActor func detail(now: Date = .now, calendar: Calendar = .current) -> String {
-        "\(when(now: now, calendar: calendar)) · \(folder)"
-    }
-
     /// "Edited 9:41 AM", "Opened Mon", "Opened Jun 3"
     func when(now: Date = .now, calendar: Calendar = .current) -> String {
         let time = switch RecentGroup.index(of: date, now: now, calendar: calendar) {
