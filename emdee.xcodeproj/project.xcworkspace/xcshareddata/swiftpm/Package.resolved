@@ -1,23 +1,6 @@
 {
-  "originHash" : "42dc81725b40cd1d6db6a667c9f9d8da87170a3bf8482d661e2f9af418e27a66",
+  "originHash" : "3bcebbb0f439b38733cce1e2cc73f857517dc0b9270e56d8861f8d992758cb38",
   "pins" : [
-    {
-      "identity" : "highlighterswift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/smittytone/HighlighterSwift",
-      "state" : {
-        "revision" : "fe7aae9c9b31d3b296fd3d2dd575e1a207bb29e0",
-        "version" : "3.1.0"
-      }
-    },
-    {
-      "identity" : "markdownkit",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/emdzej/markdownkit",
-      "state" : {
-        "revision" : "abf548b277fcbc2adb55a2af778ef534da4a7baf"
-      }
-    },
     {
       "identity" : "sparkle",
       "kind" : "remoteSourceControl",
@@ -25,15 +8,6 @@
       "state" : {
         "revision" : "ab7d71291238df6e0492143b120c9b696a35f603",
         "version" : "2.10.1"
-      }
-    },
-    {
-      "identity" : "swiftmath",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mgriebling/SwiftMath",
-      "state" : {
-        "revision" : "fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7",
-        "version" : "1.7.3"
       }
     }
   ],

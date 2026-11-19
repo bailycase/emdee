@@ -1,0 +1,158 @@
+//
+//  MarkdownStyler+Latex.swift
+//  MarkdownEngine
+//
+//  Created by Luca Chen on 16.03.26.
+//
+//  Block ($$...$$) and inline ($...$) LaTeX formula rendering.
+//
+
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+import Foundation
+
+extension MarkdownStyler {
+
+    // MARK: Block LaTeX $$...$$
+
+    static func styleBlockLatex(_ ctx: StylingContext) -> [StyledRange] {
+        var attrs: [StyledRange] = []
+        let blockLatexTokens = ctx.tokens.enumerated().filter { $0.element.kind == .blockLatex }
+        for (idx, token) in blockLatexTokens where ctx.inScope(token.range) {
+            if MarkdownDetection.isInsideCodeBlock(range: token.range, codeTokens: ctx.codeTokens) { continue }
+            let isActive = ctx.activeTokenIndices.contains(idx)
+            let rawLatexContent = ctx.nsText.substring(with: token.contentRange)
+            let latexContent = rawLatexContent.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            attrs.append((token.range, [NSAttributedString.Key.spellingState: 0]))
+
+            guard token.standaloneParagraphRange(in: ctx.nsText) != nil else { continue }
+
+            let latexFontSize = HeadingHelpers.latexFontSize(for: token, tokens: ctx.tokens, baseFont: ctx.baseFont)
+
+            if isActive {
+                appendSecondaryMarkers(for: token, to: &attrs, theme: ctx.configuration.theme)
+            } else if !latexContent.isEmpty,
+                      let entry = ctx.services.latex.render(latex: latexContent, fontSize: latexFontSize, theme: ctx.configuration.theme) {
+                _ = appendRenderedStandaloneBlock(
+                    for: token,
+                    rawContent: rawLatexContent,
+                    image: entry.image,
+                    imageBounds: CGRect(
+                        x: 0,
+                        y: entry.baselineOffset,
+                        width: entry.size.width,
+                        height: entry.size.height
+                    ),
+                    paragraphSpacingBefore: ctx.configuration.blockLatex.paragraphSpacingBefore,
+                    paragraphSpacing: ctx.configuration.blockLatex.paragraphSpacing,
+                    alignment: .center,
+                    mode: .collapsedSource(markerTexts: ["$$", "$$"]),
+                    ctx: ctx,
+                    attrs: &attrs
+                )
+            } else {
+                appendSecondaryMarkers(for: token, to: &attrs, theme: ctx.configuration.theme)
+            }
+        }
+        return attrs
+    }
+
+    // MARK: Inline LaTeX $formula$
+
+    static func styleInlineLatex(_ ctx: StylingContext) -> [StyledRange] {
+        var attrs: [StyledRange] = []
+        // Tables render their own cell contents (including `$…$`) into a single
+        // image via `formattedCellString` + `collapsedSource`. If we also tag
+        // the source-text `$x^2$` with a `.latexImage` attribute, the renderer
+        // draws that tiny inline image on the collapsed 1pt source line under
+        // the table — visible as a stray dot. Skip inline LaTeX inside a
+        // table; the table image already covers it.
+        let tableRanges = ctx.tokens.filter { $0.kind == .table }.map(\.range)
+        // Quote lines mute their text via foregroundColor, which the LaTeX *image* ignores — render it in mutedText instead so it matches the grey.
+        let blockquoteRanges = ctx.tokens.filter { $0.kind == .blockquote }.map(\.range)
+        // Each textWidth is a CoreText measurement; the two "$" marker widths are
+        // loop-invariant (fonts constant) and firstChar/restText repeat massively.
+        // Hoisting + memoizing removes all per-formula width measurement.
+        let tinyDollarWidth = HeadingHelpers.textWidth("$", font: ctx.latexMarkerFont)
+        let baseDollarWidth = HeadingHelpers.textWidth("$", font: ctx.baseFont)
+        var markerFontWidthCache: [String: CGFloat] = [:]  // all measured with latexMarkerFont
+        func markerFontWidth(_ s: String) -> CGFloat {
+            if let cached = markerFontWidthCache[s] { return cached }
+            let w = HeadingHelpers.textWidth(s, font: ctx.latexMarkerFont)
+            markerFontWidthCache[s] = w
+            return w
+        }
+        for (idx, token) in ctx.tokens.enumerated() where token.kind == .inlineLatex && ctx.inScope(token.range) {
+            if MarkdownDetection.isInsideCodeBlock(range: token.range, codeTokens: ctx.codeTokens) { continue }
+            if tableRanges.contains(where: { tableRange in
+                token.range.location >= tableRange.location
+                    && NSMaxRange(token.range) <= NSMaxRange(tableRange)
+            }) { continue }
+
+            attrs.append((token.range, [NSAttributedString.Key.spellingState: 0]))
+
+            let isActive = ctx.activeTokenIndices.contains(idx)
+            let latexContent = ctx.nsText.substring(with: token.contentRange)
+            let latexFontSize = HeadingHelpers.latexFontSize(for: token, tokens: ctx.tokens, baseFont: ctx.baseFont)
+
+            if isActive {
+                for markerRange in token.markerRanges {
+                    attrs.append((markerRange, [.foregroundColor: ctx.configuration.theme.mutedText]))
+                }
+            } else {
+                var renderTheme = ctx.configuration.theme
+                if blockquoteRanges.contains(where: { NSLocationInRange(token.range.location, $0) }) {
+                    renderTheme.latexLightModeText = renderTheme.mutedText
+                    renderTheme.latexDarkModeText = renderTheme.mutedText
+                }
+                if let entry = ctx.services.latex.render(latex: latexContent, fontSize: latexFontSize, theme: renderTheme) {
+                    let imageBounds = CGRect(x: 0, y: entry.baselineOffset, width: entry.size.width, height: entry.size.height)
+                    let contentLength = token.contentRange.length
+
+                    if contentLength > 0 {
+                        let firstCharRange = NSRange(location: token.contentRange.location, length: 1)
+                        let firstChar = ctx.nsText.substring(with: firstCharRange)
+                        attrs.append((firstCharRange, [
+                            .latexImage: entry.image,
+                            .latexBounds: NSValue(mdRect: imageBounds),
+                            .foregroundColor: PlatformColor.clear,
+                            .font: ctx.latexMarkerFont,
+                            .kern: entry.size.width - markerFontWidth(firstChar)
+                        ]))
+
+                        if contentLength > 1 {
+                            let restRange = NSRange(location: token.contentRange.location + 1, length: contentLength - 1)
+                            let restText = ctx.nsText.substring(with: restRange)
+                            attrs.append((restRange, [
+                                .foregroundColor: PlatformColor.clear,
+                                .font: ctx.latexMarkerFont,
+                                .kern: -markerFontWidth(restText)
+                            ]))
+                        }
+                    }
+
+                    let openMarker = token.markerRanges[0]
+                    attrs.append((openMarker, [
+                        .font: ctx.latexMarkerFont,
+                        .foregroundColor: PlatformColor.clear,
+                        .kern: -tinyDollarWidth
+                    ]))
+                    let closeMarker = token.markerRanges[1]
+                    attrs.append((closeMarker, [
+                        .foregroundColor: PlatformColor.clear,
+                        .kern: -baseDollarWidth
+                    ]))
+                } else {
+                    for markerRange in token.markerRanges {
+                        attrs.append((markerRange, [.foregroundColor: ctx.configuration.theme.mutedText]))
+                    }
+                }
+            }
+        }
+        return attrs
+    }
+}
