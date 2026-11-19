@@ -5,7 +5,7 @@ PRODUCT_BUNDLE_IDENTIFIER = com.bailycase.emdee
 PRODUCT_BUNDLE_IDENTIFIER[config=Debug][sdk=macosx*] = com.bailycase.emdee.dev
 PRODUCT_BUNDLE_IDENTIFIER[sdk=iphone*] = com.bailycase.emdee.ios
 INFOPLIST_KEY_CFBundleDisplayName = emdee
-MARKETING_VERSION = 0.1.0
+MARKETING_VERSION = 0.1.2
 CURRENT_PROJECT_VERSION = 1
 DEVELOPMENT_TEAM = 4J6D7M7D79
 CODE_SIGN_STYLE = Automatic

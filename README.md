@@ -1,6 +1,6 @@
 # emdee
 
-A minimal Markdown editor for Mac, iPad and iPhone. There is one view: the source, styled as you type. Type `# ` and the line becomes a heading; wrap a word in `**` and it turns bold. The Markdown marks stay in the text, muted, so the file on disk is exactly what you typed.
+A minimal Markdown editor for Mac, iPad and iPhone. Edit headings, links and table cells in place. There is no separate preview, and the file stays plain Markdown.
 
 Files stay where they are. emdee keeps a list of recently opened files as bookmarks and never copies your notes.
 
@@ -22,7 +22,7 @@ The iPhone and iPad app is `com.bailycase.emdee.ios` in both. Dev has its own bu
 - On iPhone and iPad, a format bar appears while you type: heading, bold, italic, bulleted list, checklist, code and link. On a keyboard, the Format menu has the same actions, with Command-B, Command-I and Command-K.
 - On iPad, the iPhone Duo and an iPhone in landscape, the controls sit in a rail on the trailing edge.
 
-Live styling covers headings, bold, italic, strikethrough, inline code, fenced code, links, lists, tasks, quotes and rules. Tables show in monospace so their columns line up. Images and HTML stay as plain text.
+[MarkdownKit](https://github.com/emdzej/markdownkit) renders the document with TextKit. Markdown marks reappear on the line you're editing. Pipe tables appear as grids: click or tap a cell to edit it, and use Tab to move to the next cell. The app includes MarkdownKit's Apache 2.0 license and notices.
 
 ## Releasing
 
@@ -47,7 +47,7 @@ Repository secrets, named as in Shepherd:
 
 ## Checks
 
-Run the styling, format bar, file and recents checks on a Mac:
+Run the file, word count and recents checks on a Mac:
 
 ```sh
 ./Checks/run.sh

@@ -1,3 +1,4 @@
+import MarkdownEngine
 import SwiftUI
 
 @main
@@ -24,11 +25,13 @@ struct EmdeeApp: App {
 extension FocusedValues {
     @Entry var importing: Binding<Bool>?
     @Entry var file: MarkdownFile?
+    @Entry var editor: MarkdownEditorController?
 }
 
 private struct AppCommands: Commands {
     @FocusedBinding(\.importing) private var importing
     @FocusedValue(\.file) private var file
+    @FocusedValue(\.editor) private var editor
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
@@ -38,9 +41,11 @@ private struct AppCommands: Commands {
         }
         CommandMenu("Format") {
             ForEach(MarkdownFormat.allCases) { action in
-                Button(action.label) { file?.format(action) }
-                    .keyboardShortcut(action.shortcut)
-                    .disabled(file == nil)
+                Button(action.label) {
+                    if let file, let editor { action.perform(on: editor, in: file.text) }
+                }
+                .keyboardShortcut(action.shortcut)
+                .disabled(file == nil || editor == nil)
             }
         }
     }

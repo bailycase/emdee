@@ -5,29 +5,23 @@ let bytes = Data("# Café\r\n\r\n- *First*\r\n- Second\r\n".utf8)
 precondition(Data(try! MarkdownText.decode(bytes).utf8) == bytes)
 precondition((try? MarkdownText.decode(Data([0xFF]))) == nil)
 
-// Live styling: marks muted, headings and inline styles applied, characters untouched.
-import SwiftUI
-let typed = "## Install\nUse **brew** or `make`.\n- [x] Done"
-let live = SourceStyle.styled(typed)
-precondition(String(live.characters) == typed)
-func attributes(of text: String) -> AttributedSubstring { live[live.range(of: text)!] }
-precondition(attributes(of: "## ").foregroundColor == .secondary)
-precondition(attributes(of: "Install").font == Theme.heading(2))
-precondition(attributes(of: "brew").font == Theme.body.bold())
-precondition(attributes(of: "make").font == Theme.code)
-precondition(attributes(of: "Use").font == Theme.body && attributes(of: "Use").foregroundColor == nil)
-precondition(attributes(of: "Done").foregroundColor == .secondary)
 precondition(MarkdownText.wordCount("## Install\n\n- `brew install`") == 3)
 
-// Format bar edits: wrapping keeps the selection on the words, line prefixes toggle.
-let bold = MarkdownFormat.bold.apply(to: "say hi", selection: 4..<6)
-precondition(bold.text == "say **hi**" && bold.selection == 6..<8)
-let link = MarkdownFormat.link.apply(to: "docs", selection: 0..<4)
-precondition(link.text == "[docs]()" && link.selection == 7..<7)
-let listed = MarkdownFormat.bulletList.apply(to: "a\r\nb", selection: 0..<3)
-precondition(listed.text == "- a\r\n- b" && listed.selection == 2..<7)
-precondition(MarkdownFormat.bulletList.apply(to: listed.text, selection: listed.selection).text == "a\r\nb")
-precondition(MarkdownFormat.heading.apply(to: "## Install", selection: 10..<10).text == "Install")
+// A table edit saves Markdown, not rendered cells, and preserves untouched CRLF and Unicode.
+try MainActor.assumeIsolated {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".md")
+    let original = "# Café\r\n\r\n| Source | Reference |\r\n| --- | --- |\r\n| App | **Pending** |\r\n"
+    try Data(original.utf8).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let file = try MarkdownFile(url: url)
+    precondition(!file.isDirty && Data(file.text.utf8) == Data(original.utf8))
+    let edited = original.replacingOccurrences(of: "Pending", with: "Approved")
+    file.text = edited
+    precondition(file.isDirty)
+    try file.save()
+    let saved = try Data(contentsOf: url)
+    precondition(!file.isDirty && saved == Data(edited.utf8))
+}
 
 // Recents: grouped by day, newest first, with paths shown the way people know them.
 let calendar = Calendar(identifier: .gregorian)
