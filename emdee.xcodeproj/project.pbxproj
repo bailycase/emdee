@@ -4,7 +4,7 @@
  classes = {};
  objectVersion = 77;
  objects = {
-  E00000000000000000000023 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/emdzej/markdownkit"; requirement = {kind = revision; revision = abf548b277fcbc2adb55a2af778ef534da4a7baf;};};
+  E00000000000000000000023 = {isa = XCLocalSwiftPackageReference; relativePath = Vendor/MarkdownKit;};
   E00000000000000000000024 = {isa = XCSwiftPackageProductDependency; package = E00000000000000000000023; productName = MarkdownEngine;};
   E00000000000000000000027 = {isa = PBXBuildFile; productRef = E00000000000000000000024; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy);};};
   E00000000000000000000026 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 10; files = (E00000000000000000000027); name = "Embed Frameworks"; runOnlyForDeploymentPostprocessing = 0;};

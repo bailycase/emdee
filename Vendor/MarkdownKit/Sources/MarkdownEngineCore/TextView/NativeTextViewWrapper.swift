@@ -1,0 +1,594 @@
+#if os(macOS)
+//
+//  NativeTextViewWrapper.swift
+//  MarkdownEngine
+//
+//  Created by Luca Chen on 18.02.26.
+//
+
+// Brings the editor into SwiftUI and wires up the text view with the
+// right setup, styling, and callbacks.
+//
+// Public selection / replacement value types live in
+// `NativeTextViewSelectionTypes.swift`.
+import SwiftUI
+import AppKit
+
+/// SwiftUI bridge for MarkdownEngine's AppKit-backed editor.
+///
+/// Wraps a TextKit 2 `NSTextView` inside an `NSScrollView` and exposes a
+/// SwiftUI-friendly API of bindings (text, link state, replacement requests)
+/// and callback closures (link clicks, caret movement, inline-selection and
+/// code-block change notifications). All visual styling and external
+/// dependencies are routed through ``MarkdownEditorConfiguration``.
+public struct NativeTextViewWrapper: NSViewRepresentable {
+    public typealias Coordinator = NativeTextViewCoordinator
+    public typealias NSViewType = NSScrollView
+
+    /// Two-way binding to the document text, exactly as stored on disk.
+    @Binding public var text: String
+    /// The full editor configuration (theme + services + style toggles). Engine
+    /// embedders construct this themselves and pass it in; the wrapper does
+    /// not read UserDefaults or know about app-specific colors/services.
+    public var configuration: MarkdownEditorConfiguration
+    /// PostScript name of the base font used for body text.
+    public var fontName: String
+    /// Base font size in points. Headings, code blocks, and LaTeX are scaled
+    /// off this value via ``MarkdownEditorConfiguration``.
+    public var fontSize: CGFloat
+    /// Opaque document identifier. Changing this invalidates undo history
+    /// and resets per-document editor state. Set a stable, unique value
+    /// per document when displaying multiple editors so undo stays
+    /// scoped to each editor.
+    public var documentId: String
+    /// When `false` the editor renders read-only with no caret.
+    public var isEditable: Bool
+    /// Optional paste hook. Return a Markdown image string (e.g.
+    /// `"![](attachments/photo.png)"`) to insert at the caret, or `nil` to fall through
+    /// to the system's default plain-text paste.
+    public var onPasteImage: ((NSPasteboard) -> String?)?
+    /// Called with files dropped onto the editor. Store them (e.g. copy them
+    /// into an attachments folder) and return the markdown to insert at the
+    /// drop point — `DroppedFile.markdownLink(to:)` builds a link — or nil to
+    /// ignore the drop. Without a handler, file drops behave as in NSTextView.
+    public var onDropFiles: FileDropHandler?
+
+    /// Fires when the user clicks a link, with its destination. When nil,
+    /// AppKit opens the URL itself.
+    public var onLinkClick: ((String) -> Void)?
+    /// Addresses this editor from outside (insert text, focus).
+    public var controller: MarkdownEditorController?
+    /// Fires when the set of visible code blocks changes, so embedders can
+    /// overlay copy buttons (see ``CodeBlockButton``).
+    public var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
+    /// Fires after the user toggles any of the three spell/grammar/auto-correction
+    /// menu items. Embedders persist the policy and pass it back via
+    /// ``MarkdownEditorConfiguration/spellChecking`` on next launch.
+    public var onSpellCheckingPolicyChanged: ((SpellCheckingPolicy) -> Void)?
+
+    /// Ghost text shown at the first-line position while the document is empty;
+    /// the first typed character hides it. Lives inside the scrolled content, so
+    /// it sits below the header band and tracks its expand/collapse animation.
+    public var placeholder: NSAttributedString?
+
+    /// SwiftUI header hosted above the body and scrolling with it. The engine owns
+    /// an `NSHostingView`, reserves its (intrinsic) height at the top of the text
+    /// content, and refreshes the hosted content on every SwiftUI update. The header
+    /// is a sibling of the text view in the scrolled container, so it is fully
+    /// interactive. Inject any required SwiftUI environment into this content
+    /// before passing it in.
+    public var header: AnyView?
+    /// Visible header height when collapsed — typically just the top row. Content
+    /// below this is clipped. The embedder measures and supplies it so the top row
+    /// stays fully visible while the lower content reveals/hides.
+    public var headerCollapsedHeight: CGFloat
+    /// Whether the header is expanded to its full content height or collapsed to
+    /// ``headerCollapsedHeight``. Toggling animates the reveal.
+    public var headerExpanded: Bool
+
+    /// documentIds whose scroll offset to keep; others are forgotten. `nil` keeps all.
+    public var retainedScrollDocumentIds: Set<String>?
+
+    public init(
+        text: Binding<String>,
+        configuration: MarkdownEditorConfiguration = .default,
+        fontName: String = "SF Pro",
+        fontSize: CGFloat = 16,
+        documentId: String = "default",
+        isEditable: Bool = true,
+        controller: MarkdownEditorController? = nil,
+        onPasteImage: ((NSPasteboard) -> String?)? = nil,
+        onDropFiles: FileDropHandler? = nil,
+        onLinkClick: ((String) -> Void)? = nil,
+        onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)? = nil,
+        onSpellCheckingPolicyChanged: ((SpellCheckingPolicy) -> Void)? = nil,
+        placeholder: NSAttributedString? = nil,
+        header: AnyView? = nil,
+        headerCollapsedHeight: CGFloat = 0,
+        headerExpanded: Bool = true,
+        retainedScrollDocumentIds: Set<String>? = nil
+    ) {
+        self._text = text
+        self.configuration = configuration
+        self.fontName = fontName
+        self.fontSize = fontSize
+        self.documentId = documentId
+        self.isEditable = isEditable
+        self.controller = controller
+        self.onPasteImage = onPasteImage
+        self.onDropFiles = onDropFiles
+        self.onLinkClick = onLinkClick
+        self.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        self.onSpellCheckingPolicyChanged = onSpellCheckingPolicyChanged
+        self.placeholder = placeholder
+        self.header = header
+        self.headerCollapsedHeight = headerCollapsedHeight
+        self.headerExpanded = headerExpanded
+        self.retainedScrollDocumentIds = retainedScrollDocumentIds
+    }
+
+    public func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = ClampedScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = configuration.scrollers.hasVerticalScroller
+        scrollView.hasHorizontalScroller = configuration.scrollers.hasHorizontalScroller
+        scrollView.autohidesScrollers = configuration.scrollers.autohidesScrollers
+        scrollView.drawsBackground = false
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(
+            top: configuration.safeAreaInsets.top,
+            left: configuration.safeAreaInsets.leading,
+            bottom: configuration.safeAreaInsets.bottom,
+            right: configuration.safeAreaInsets.trailing
+        )
+
+        // Let NSTextView auto-initialize its own TextKit 2 stack via init(frame:).
+        let textView = NativeTextView(frame: .zero)
+
+        // Configure the auto-created text container.
+        guard let textContainer = textView.textContainer,
+              let textLayoutManager = textView.textLayoutManager else {
+            fatalError("NSTextView did not create a TextKit 2 stack on this OS version")
+        }
+        textContainer.lineFragmentPadding = 0
+        if let readingWidth = configuration.readingWidth {
+            // Fix wrap width at readingWidth so text never re-wraps on resize; only the column's position moves.
+            textContainer.widthTracksTextView = false
+            textContainer.size = CGSize(width: readingWidth, height: .greatestFiniteMagnitude)
+        } else {
+            textContainer.widthTracksTextView = true
+        }
+        textView.textContainerInset = CGSize(
+            width: configuration.textInsets.horizontal,
+            height: configuration.textInsets.vertical
+        )
+        textContainer.heightTracksTextView = false
+
+        let layoutDelegate = MarkdownLayoutManagerDelegate()
+        context.coordinator.layoutDelegate = layoutDelegate
+        textLayoutManager.delegate = layoutDelegate
+        textView.configuration = configuration
+        textView.overscrollPercent = configuration.overscroll.percent
+        textView.maxOverscrollPoints = configuration.overscroll.maxPoints
+        textView.minOverscrollPoints = configuration.overscroll.minPoints
+        context.coordinator.configuration = configuration
+        Self.applyChrome(configuration, to: textView, in: scrollView)
+        textView.isEditable = isEditable
+        textView.isSelectable = true
+        textView.isRichText = true
+        textView.string = text
+        textView.delegate = context.coordinator
+        textView.isVerticallyResizable = true
+        textView.maxSize = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.postsFrameChangedNotifications = true
+        // Width and origin are driven by the container document view (see below).
+        textView.autoresizingMask = []
+        textView.backgroundColor = .clear
+        // Body compositing for the scroll-away header (clipsToBounds + redraw policy)
+        // is applied by ScrollingHeaderController when a header is first supplied, so
+        // header-less embedders keep AppKit's default rendering.
+        let font = PlatformFont.md(named: fontName, size: fontSize)
+        textView.font = font
+        textView.baseFont = font
+        textView.allowsUndo = true
+        textView.isAutomaticSpellingCorrectionEnabled = configuration.spellChecking.automaticSpellingCorrection
+        textView.isContinuousSpellCheckingEnabled = configuration.spellChecking.continuousSpellChecking
+        textView.isGrammarCheckingEnabled = configuration.spellChecking.grammarChecking
+        textView.isAutomaticQuoteSubstitutionEnabled = true
+        textView.isAutomaticDataDetectionEnabled = true
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.onPasteImage = onPasteImage
+        textView.onDropFiles = onDropFiles
+        if #available(macOS 15.1, *) {
+            textView.writingToolsBehavior = .complete
+        }
+        // Create TextKit 2 layout bridge
+        let bridge = LayoutBridge(textLayoutManager)
+        context.coordinator.layoutBridge = bridge
+        textView.layoutBridge = bridge
+
+        // The document view is ALWAYS a container (`NativeTextViewContainer`) hosting
+        // the text view, the optional scroll-away header (a top band stacked ABOVE the
+        // text view as a sibling — disjoint frames, so body/header overlap is
+        // geometrically impossible), and, in reading-column mode, the full-width
+        // wide-table overlays around the centered fixed-width column. The text view
+        // keeps managing its own height; the container offsets it below the header
+        // band and sizes itself to the sum.
+        let vpSize = scrollView.contentView.bounds.size
+        let container = NativeTextViewContainer(frame: CGRect(origin: .zero, size: vpSize))
+        container.autoresizingMask = [.width]
+        container.clipsToBounds = true
+        container.textView = textView
+        let initialWidth = configuration.readingWidth != nil ? textView.readingColumnWidth : vpSize.width
+        textView.frame = CGRect(x: 0, y: 0, width: initialWidth, height: textView.frame.height)
+        container.addSubview(textView)
+        scrollView.documentView = container
+        // Force full-document layout at init so paragraph heights are known
+        // upfront; otherwise TextKit 2 viewport layout causes scroll drift.
+        textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
+
+        scrollView.contentView.scroll(to: CGPoint(x: 0, y: -scrollView.contentInsets.top))
+        scrollView.clampToInsets()
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        context.coordinator.textView = textView
+        controller?.textView = textView
+        context.coordinator.subscribeToUndoNotifications()
+        context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+
+        textView.recalcOverscroll(for: scrollView)
+        textView.setPlaceholder(placeholder)
+        // Initial reading-column centering; the resize observer below handles later changes.
+        if configuration.readingWidth != nil {
+            textView.centerReadingColumn(forClipWidth: scrollView.contentView.bounds.width)
+        }
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        var lastObservedViewportWidth = scrollView.contentView.bounds.width
+        let topPin = TopPin(frame: scrollView.contentView.frame)
+        NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: scrollView.contentView, queue: nil) { _ in
+            // A viewport that showed the document's top keeps showing it when it
+            // resizes (e.g. a bar appears above the editor); AppKit would keep the
+            // old offset and hide the first lines.
+            topPin.frame = scrollView.contentView.frame
+            if topPin.atTop, abs(scrollView.contentView.bounds.origin.y + scrollView.contentInsets.top) > 0.5 {
+                scrollView.contentView.scroll(to: CGPoint(x: scrollView.contentView.bounds.origin.x, y: -scrollView.contentInsets.top))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+            // Refresh code-block overlays only on real viewport width changes, not on TextKit height-only echoes during typing.
+            let newWidth = scrollView.contentView.bounds.width
+            if abs(newWidth - lastObservedViewportWidth) > 0.5 {
+                lastObservedViewportWidth = newWidth
+                // Re-center the column by position (no redraw) so it stays smooth during live resize.
+                if configuration.readingWidth != nil {
+                    textView.centerReadingColumn(forClipWidth: newWidth)
+                }
+                context.coordinator.didEnsureLayoutForCurrentDocument = false
+                context.coordinator.updateCodeBlockSelection(textView: textView)
+                context.coordinator.scheduleWidthDependentRestyle(textView)
+            }
+            // Only react with overscroll recalc when the viewport itself resizes
+            // (window resize). Without this guard, TextKit-induced frame changes echo
+            // back here and re-trigger recalcOverscroll, causing a 149pt height
+            // oscillation after clicks. Compare the CONTAINER (the document view) height
+            // to the viewport — it tracks the viewport for short docs.
+            guard let container = scrollView.documentView as? NativeTextViewContainer,
+                  abs(container.frame.height - scrollView.contentView.bounds.height) > 1 else { return }
+            textView.recalcOverscroll(for: scrollView)
+            scrollView.clampToInsets()
+        }
+        NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: nil) { _ in
+            // Only real scrolls (same viewport frame) decide whether we're at the top.
+            if scrollView.contentView.frame == topPin.frame {
+                topPin.atTop = scrollView.contentView.bounds.origin.y <= -scrollView.contentInsets.top + 0.5
+            }
+            textView.ensureVisibleLayout()
+            if context.coordinator.isWritingToolsActive {
+                context.coordinator.fixWritingToolsChildWindowIfNeeded(textView: textView)
+            }
+            scrollView.clampToInsets()
+            context.coordinator.updateCodeBlockSelection(textView: textView)
+        }
+        reconcileHeader(textView: textView, context: context)
+        return scrollView
+    }
+
+    public func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.nativeTextView else { return }
+        controller?.textView = textView
+        reconcileHeader(textView: textView, context: context)
+
+        let isNodeSwitch = context.coordinator.documentId != documentId
+
+        // Drop remembered offsets for documents no longer retained (always keep
+        // the current one). Only rebuilds the dict when something must go.
+        if let retained = retainedScrollDocumentIds {
+            let needsPrune = context.coordinator.scrollOffsets.keys.contains { key in
+                key != documentId && !retained.contains(key)
+            }
+            if needsPrune {
+                context.coordinator.scrollOffsets = context.coordinator.scrollOffsets.filter {
+                    $0.key == documentId || retained.contains($0.key)
+                }
+            }
+        }
+
+        let wtActive: Bool = {
+            if #available(macOS 15.0, *), textView.isWritingToolsActive { return true }
+            return context.coordinator.isWritingToolsActive
+        }()
+
+        if wtActive && isNodeSwitch {
+            // User switched files while Writing Tools was active — discard the
+            // WT session so it doesn't overwrite the wrong node.
+            // Keep wtStartDocumentId so textViewWritingToolsDidEnd can detect the
+            // node mismatch and discard the results.
+            context.coordinator.isWritingToolsActive = false
+        } else if wtActive {
+            // WT active on the same node — don't interfere with the session.
+            return
+        }
+
+        textView.onPasteImage = onPasteImage
+        textView.onDropFiles = onDropFiles
+        textView.setPlaceholder(placeholder)
+        if nsView.hasVerticalScroller != configuration.scrollers.hasVerticalScroller {
+            nsView.hasVerticalScroller = configuration.scrollers.hasVerticalScroller
+        }
+        if nsView.hasHorizontalScroller != configuration.scrollers.hasHorizontalScroller {
+            nsView.hasHorizontalScroller = configuration.scrollers.hasHorizontalScroller
+        }
+        if nsView.autohidesScrollers != configuration.scrollers.autohidesScrollers {
+            nsView.autohidesScrollers = configuration.scrollers.autohidesScrollers
+        }
+        // Safe-area insets can change after creation (e.g. a bar shown above the text).
+        let safeArea = configuration.safeAreaInsets
+        let current = nsView.contentInsets
+        if abs(current.top - safeArea.top) > 0.5 || abs(current.bottom - safeArea.bottom) > 0.5
+            || abs(current.left - safeArea.leading) > 0.5 || abs(current.right - safeArea.trailing) > 0.5 {
+            let wasAtTop = nsView.contentView.bounds.origin.y <= -current.top + 0.5
+            nsView.contentInsets = NSEdgeInsets(top: safeArea.top, left: safeArea.leading,
+                                                bottom: safeArea.bottom, right: safeArea.trailing)
+            if wasAtTop { nsView.contentView.scroll(to: CGPoint(x: 0, y: -safeArea.top)) }
+            nsView.reflectScrolledClipView(nsView.contentView)
+            textView.recalcOverscroll(for: nsView)
+        }
+        // Reading column centers by POSITION (container subview), so the text inset is constant.
+        let desiredTextInset = CGSize(
+            width: configuration.textInsets.horizontal,
+            height: configuration.textInsets.vertical
+        )
+        if abs(textView.textContainerInset.width - desiredTextInset.width) > 0.5
+            || abs(textView.textContainerInset.height - desiredTextInset.height) > 0.5 {
+            textView.textContainerInset = desiredTextInset
+        }
+        // Refresh services/theme when the embedder hands us a new configuration
+        // (e.g. when the available images change). Cheap pointer-/
+        // value-based comparison; full equality isn't required because the
+        // embedder is the source of truth.
+        let newImageFingerprint = configuration.services.contentFingerprint
+        let imageChanged = newImageFingerprint != context.coordinator.lastImageFingerprint
+        if imageChanged {
+            context.coordinator.lastImageFingerprint = newImageFingerprint
+            context.coordinator.configuration.services = configuration.services
+            textView.configuration.services = configuration.services
+            if let tlm = textView.textLayoutManager {
+                tlm.invalidateLayout(for: tlm.documentRange)
+            }
+            // Restyle live tv content — full rebuild would clobber paste-fresh images when `text` binding hasn't caught up.
+            let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+            if fullRange.length > 0 {
+                context.coordinator.restyleParagraphs([fullRange], in: textView)
+            }
+        }
+        if configuration.renderingMode != context.coordinator.configuration.renderingMode
+            || configuration.appearanceRevision != context.coordinator.configuration.appearanceRevision,
+           context.coordinator.didInitialFormatting {
+            Self.applyChrome(configuration, to: textView, in: nsView)
+            switchRenderingMode(to: configuration, textView: textView, scrollView: nsView, coordinator: context.coordinator)
+        }
+        textView.isEditable = isEditable
+        textView.isSelectable = true
+        textView.insertionPointColor = isEditable ? context.coordinator.configuration.theme.caretColor : .clear
+        let fontChanged = (context.coordinator.fontName != fontName) || (context.coordinator.fontSize != fontSize)
+        if context.coordinator.didInitialFormatting
+            && context.coordinator.lastSyncedText == text
+            && !fontChanged {
+            return
+        }
+        if fontChanged {
+            context.coordinator.didInitialFormatting = false
+        }
+        if isNodeSwitch {
+            // Save the outgoing document's scroll position — unless it just left
+            // the retained set, in which case let it reset to top next time.
+            if let outgoingId = context.coordinator.documentId,
+               retainedScrollDocumentIds?.contains(outgoingId) ?? true {
+                context.coordinator.scrollOffsets[outgoingId] = nsView.contentView.bounds.origin.y
+            }
+            context.coordinator.documentId = documentId
+            textView.undoManager?.removeAllActions()
+            context.coordinator.didInitialFormatting = false
+            context.coordinator.didEnsureLayoutForCurrentDocument = false
+            // Drop old document's wide-table overlays synchronously.
+            textView.removeAllWideTableOverlays()
+            // Park at top during the rebuild; the new document's own saved offset
+            // (if any) is restored after its height is known (see below).
+            nsView.contentView.scroll(to: CGPoint(x: 0, y: -nsView.contentInsets.top))
+            nsView.reflectScrolledClipView(nsView.contentView)
+            (nsView as? ClampedScrollView)?.clampToInsets()
+        }
+
+        let font = PlatformFont.md(named: fontName, size: fontSize)
+        textView.font = font
+        textView.baseFont = font
+        // Skip on switch: textView.string still holds the OUTGOING doc here, so the "?"
+        // tag would force a full ensureLayout of the doc about to be discarded (~274ms /
+        // 7714 frags @346k). recalcOverscroll#2 after the rebuild measures the new doc;
+        // scroll is parked at top so clampToInsets below stays in range. Non-switch
+        // updates (font change, typing) must keep the forced full layout.
+        if !isNodeSwitch {
+            textView.recalcOverscroll(for: nsView)
+        }
+        (nsView as? ClampedScrollView)?.clampToInsets()
+
+        // Sync coordinator's font fields BEFORE the rebuild so the helper
+        // reads the current values from the View struct.
+        context.coordinator.fontName = fontName
+        context.coordinator.fontSize = fontSize
+        context.coordinator.rebuildTextStorageAndStyle(
+            textView,
+            from: text,
+            invalidateLayout: isNodeSwitch
+        )
+        textView.recalcOverscroll(for: nsView)
+        (nsView as? ClampedScrollView)?.clampToInsets()
+        // Height is measured now, so restore the saved offset; clampToInsets keeps
+        // it in range if the document got shorter.
+        if isNodeSwitch, let savedY = context.coordinator.scrollOffsets[documentId] {
+            nsView.contentView.scroll(to: CGPoint(x: nsView.contentView.bounds.origin.x, y: savedY))
+            nsView.reflectScrolledClipView(nsView.contentView)
+            (nsView as? ClampedScrollView)?.clampToInsets()
+        }
+        // Document rebuilds bypass textDidChange — re-derive emptiness here.
+        textView.refreshPlaceholderVisibility()
+        DispatchQueue.main.async {
+            context.coordinator.updateCodeBlockSelection(textView: textView)
+        }
+
+        context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        context.coordinator.didInitialFormatting = true
+    }
+
+    public func makeCoordinator() -> Coordinator {
+        let coordinator = NativeTextViewCoordinator(
+            text: $text,
+            fontName: fontName,
+            fontSize: fontSize,
+            onLinkClick: onLinkClick
+        )
+        coordinator.documentId = documentId
+        coordinator.configuration = configuration
+        coordinator.lastImageFingerprint = configuration.services.contentFingerprint
+        coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        coordinator.userPrefersContinuousSpellChecking = configuration.spellChecking.continuousSpellChecking
+        coordinator.userPrefersGrammarChecking = configuration.spellChecking.grammarChecking
+        coordinator.userPrefersAutomaticSpellingCorrection = configuration.spellChecking.automaticSpellingCorrection
+        coordinator.onSpellCheckingPolicyChanged = onSpellCheckingPolicyChanged
+        return coordinator
+    }
+}
+// MARK: - Rendering mode
+
+private extension NativeTextViewWrapper {
+    /// Restyles the whole document for a new rendering mode, keeping the
+    /// selection and the text at the top of the viewport where they were.
+    func switchRenderingMode(
+        to configuration: MarkdownEditorConfiguration,
+        textView: NSTextView,
+        scrollView: NSScrollView,
+        coordinator: Coordinator
+    ) {
+        let wasAtTop = scrollView.contentView.bounds.origin.y <= -scrollView.contentInsets.top + 0.5
+        let topCharacter = textView.characterIndexForInsertion(
+            at: NSPoint(x: textView.textContainerInset.width + 1, y: textView.visibleRect.minY + 1)
+        )
+        let topOffset = Self.lineTop(of: topCharacter, in: textView).map { $0 - textView.visibleRect.minY } ?? 0
+
+        // The whole configuration, services included (a theme change can bring a new highlighter).
+        coordinator.configuration = configuration
+        coordinator.lastImageFingerprint = configuration.services.contentFingerprint
+        if let native = textView as? NativeTextView {
+            native.configuration = configuration
+            native.removeAllWideTableOverlays()
+        }
+        coordinator.revealedTableLocation = nil
+        // Before the rebuild: assigning `font` re-fonts the whole storage.
+        let font = TextStylingService.makeBaseFontAndStyle(
+            fontName: fontName, fontSize: fontSize, configuration: coordinator.configuration
+        ).font
+        textView.font = font
+        (textView as? NativeTextView)?.baseFont = font
+        let selection = textView.selectedRanges
+        coordinator.rebuildTextStorageAndStyle(textView, from: textView.string, invalidateLayout: true)
+        textView.selectedRanges = selection
+        (textView as? NativeTextView)?.recalcOverscroll(for: scrollView)
+
+        let y: CGFloat? = wasAtTop
+            ? -scrollView.contentInsets.top
+            : Self.lineTop(of: topCharacter, in: textView).map { $0 - topOffset }
+        if let y {
+            scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: y))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            (scrollView as? ClampedScrollView)?.clampToInsets()
+        }
+    }
+
+    /// Background, caret, selection and link colors from the theme.
+    static func applyChrome(_ configuration: MarkdownEditorConfiguration, to textView: NSTextView, in scrollView: NSScrollView) {
+        let theme = configuration.theme
+        if let background = configuration.activeBackground {
+            scrollView.drawsBackground = true
+            scrollView.backgroundColor = background
+        } else {
+            scrollView.drawsBackground = false
+        }
+        textView.insertionPointColor = theme.caretColor
+        var selected = textView.selectedTextAttributes
+        selected[.backgroundColor] = theme.selection ?? NSColor.selectedTextBackgroundColor
+        textView.selectedTextAttributes = selected
+        // Find and replace (⌘F, ⌥⌘F): the system find bar above the text.
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
+        // NSTextView draws `.link` runs with these, over the styler's foreground color.
+        textView.linkTextAttributes = [
+            .foregroundColor: configuration.renderingMode == .source ? (configuration.source.linkColor ?? theme.link) : theme.link,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .cursor: NSCursor.pointingHand,
+        ]
+    }
+
+    /// The y of the layout fragment holding `location`, in text view coordinates.
+    static func lineTop(of location: Int, in textView: NSTextView) -> CGFloat? {
+        guard let tlm = textView.textLayoutManager, let tcs = tlm.textContentManager,
+              let textLocation = tcs.location(tcs.documentRange.location, offsetBy: max(0, location)),
+              let fragment = tlm.textLayoutFragment(for: textLocation) else { return nil }
+        return fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y
+    }
+}
+
+// MARK: - Scrolling header view
+
+private extension NativeTextViewWrapper {
+    /// Host the embedder's header above the body, inside the container document
+    /// view. The hosted content refreshes on every SwiftUI update; build,
+    /// collapse/expand, and teardown live in `ScrollingHeaderController`.
+    func reconcileHeader(textView: NSTextView, context: Context) {
+        let coord = context.coordinator
+        guard let container = (textView as? NativeTextView)?.superview as? NativeTextViewContainer else { return }
+
+        guard let header else {
+            if let controller = coord.headerController {
+                controller.remove(from: container)
+                coord.headerController = nil
+            }
+            return
+        }
+        let controller = coord.headerController ?? ScrollingHeaderController()
+        coord.headerController = controller
+        controller.reconcile(
+            header: header,
+            collapsedHeight: headerCollapsedHeight,
+            expanded: headerExpanded,
+            container: container
+        )
+    }
+}
+
+/// Whether the scroll view shows the top of the document, across viewport resizes.
+private final class TopPin {
+    var atTop = true
+    var frame: NSRect
+    init(frame: NSRect) { self.frame = frame }
+}
+
+#endif

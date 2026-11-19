@@ -202,17 +202,24 @@ private struct RecentRow: View {
     let chrome: Chrome
 
     var body: some View {
-        HStack(spacing: chrome == .mac ? 8 : 12) {
-            Image(systemName: "doc.text")
-                .font(chrome == .mac ? .body : .title3)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            if chrome != .mac {
+                Image(systemName: "doc.text").font(.title3).foregroundStyle(.secondary)
+            }
             VStack(alignment: .leading, spacing: chrome == .phone ? 2 : 1) {
                 Text(file.name).font(nameFont)
-                Text(file.detail()).font(detailFont).foregroundStyle(.secondary)
+                Text(verbatim: file.folder)
+                    .font(detailFont)
+                    .foregroundStyle(.secondary)
+                    .truncationMode(.head)
             }
             .lineLimit(1)
         }
         .padding(.vertical, chrome == .mac ? 2 : 4)
+        #if os(macOS)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(Text(verbatim: file.path))
+        #endif
     }
 
     private var nameFont: Font {

@@ -1,0 +1,162 @@
+//
+//  MarkdownDetection.swift
+//  MarkdownEngine
+//
+//  Created by Luca Chen on 18.02.26.
+//
+
+// Helper checks for questions like "is the cursor inside code or LaTeX?"
+// and "which Markdown part is currently active?".
+import Foundation
+
+enum MarkdownDetection {
+
+    // MARK: - Active Token Indices
+
+    /// When the caret activates (reveals the raw source of) a table.
+    enum TableRevealPolicy: Equatable {
+        /// Caret inside the table reveals it (no table grid).
+        case caret
+        /// Only the table starting at this location is revealed ("Edit as
+        /// Markdown"); every other table stays rendered for the grid.
+        /// `nil` reveals none.
+        case only(Int?)
+    }
+
+    static func computeActiveTokenIndices(
+        selectionRange: NSRange,
+        tokens: [MarkdownToken],
+        in text: NSString,
+        suppressed: Bool = false,
+        tableReveal: TableRevealPolicy = .caret
+    ) -> Set<Int> {
+        // Read-only mode (no caret) hides all tokens regardless of any trailing selection.
+        if suppressed { return [] }
+        var indices: Set<Int> = []
+        let caretLocation = selectionRange.location
+        for (index, token) in tokens.enumerated() {
+            if token.kind == .table, case .only(let revealed) = tableReveal {
+                if token.range.location == revealed { indices.insert(index) }
+                continue
+            }
+            let start = token.range.location
+            let end = NSMaxRange(token.range)
+            if token.kind == .frontmatter {
+                // A caret before the opening `---` (where a note opens) keeps it collapsed.
+                if (caretLocation > start && caretLocation <= end)
+                    || (selectionRange.length > 0 && NSIntersectionRange(selectionRange, token.range).length > 0) {
+                    indices.insert(index)
+                }
+                continue
+            }
+            if selectionRange.length > 0 && (token.kind == .inlineLatex || token.kind == .blockLatex) && NSIntersectionRange(selectionRange, token.range).length > 0 {
+                indices.insert(index)
+                continue
+            }
+            if caretLocation >= start && caretLocation < end {
+                indices.insert(index)
+                continue
+            }
+            if caretLocation == end {
+                let lastIndex = end - 1
+                if lastIndex >= start && lastIndex < text.length {
+                    let lastChar = text.substring(with: NSRange(location: lastIndex, length: 1))
+                    if lastChar != "\n" {
+                        indices.insert(index)
+                    }
+                }
+            }
+        }
+
+        // When a container token (e.g. a table) is active, every inline token inside it becomes active too.
+        let activeContainers: [MarkdownToken] = indices.compactMap { idx in
+            let token = tokens[idx]
+            return token.kind == .table ? token : nil
+        }
+        if !activeContainers.isEmpty {
+            for (i, token) in tokens.enumerated() where !indices.contains(i) {
+                let tStart = token.range.location
+                let tEnd = NSMaxRange(token.range)
+                if activeContainers.contains(where: {
+                    tStart >= $0.range.location && tEnd <= NSMaxRange($0.range)
+                }) {
+                    indices.insert(i)
+                }
+            }
+        }
+        return indices
+    }
+
+    // MARK: - Code Block Detection
+
+    /// Slow: parses tokens each call
+    static func isInsideCodeBlock(range: NSRange, in text: String) -> Bool {
+        let codeTokens = MarkdownTokenizer.parseTokensViaAST(in: text).filter { $0.kind == .codeBlock || $0.kind == .inlineCode }
+        return isInsideCodeBlock(range: range, codeTokens: codeTokens)
+    }
+
+    static func isInsideCodeBlock(location: Int, in text: String) -> Bool {
+        isInsideCodeBlock(range: NSRange(location: location, length: 0), in: text)
+    }
+
+    /// Fast: uses pre-parsed tokens
+    static func isInsideCodeBlock(range: NSRange, codeTokens: [MarkdownToken]) -> Bool {
+        guard !codeTokens.isEmpty else { return false }
+        for token in codeTokens {
+            let start = token.range.location
+            let end = start + token.range.length
+            if range.length == 0 {
+                if range.location >= start && range.location <= end { return true }
+            } else {
+                if range.location < end && range.location + range.length > start { return true }
+            }
+        }
+        return false
+    }
+
+    static func isInsideCodeBlock(location: Int, codeTokens: [MarkdownToken]) -> Bool {
+        isInsideCodeBlock(range: NSRange(location: location, length: 0), codeTokens: codeTokens)
+    }
+
+    /// Count of non-overlapping ``` occurrences in `range` (default: the whole
+    /// text), scanning left to right — exactly
+    /// `substring.components(separatedBy: "```").count - 1`, but as one UTF-16
+    /// pass with no substring-array allocation. (Ported from swift-markdown-engine #96.)
+    static func tripleBacktickCount(in text: NSString, range: NSRange? = nil) -> Int {
+        let scan = range ?? NSRange(location: 0, length: text.length)
+        let length = scan.length
+        guard length >= 3, scan.location >= 0, NSMaxRange(scan) <= text.length else { return 0 }
+        var buffer = [unichar](repeating: 0, count: length)
+        text.getCharacters(&buffer, range: scan)
+        var count = 0
+        var i = 0
+        while i + 2 < length {                           // i can reach length - 3
+            if buffer[i] == 0x60, buffer[i + 1] == 0x60, buffer[i + 2] == 0x60 {
+                count += 1
+                i += 3
+            } else {
+                i += 1
+            }
+        }
+        return count
+    }
+
+    // MARK: - LaTeX Detection
+
+    static func isInsideLatex(location: Int, in text: String) -> Bool {
+        let tokens = MarkdownTokenizer.parseTokensViaAST(in: text)
+        let latexTokens = tokens.filter { $0.kind == .inlineLatex || $0.kind == .blockLatex }
+        return isInsideLatex(location: location, latexTokens: latexTokens)
+    }
+
+    static func isInsideLatex(location: Int, latexTokens: [MarkdownToken]) -> Bool {
+        guard !latexTokens.isEmpty else { return false }
+        for token in latexTokens {
+            let start = token.range.location
+            let end = start + token.range.length
+            if location >= start && location <= end { return true }
+        }
+        return false
+    }
+
+}
