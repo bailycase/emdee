@@ -1,6 +1,7 @@
+import MarkdownEngine
 import SwiftUI
 
-/// One open file, always editable. The Markdown styles itself as it is typed.
+/// One open file, always editable. MarkdownEngine styles the Markdown as it is typed.
 struct FileView: View {
     @Bindable var file: MarkdownFile
     let recent: RecentFile?
@@ -15,40 +16,33 @@ struct FileView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var saveError: String?
     @State private var margin = Theme.columnPadding
-    @FocusState private var focused: Bool
+    @State private var controller = MarkdownEditorController()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if chrome == .rail {
                 FileHeader(name: file.name, subtitle: subtitle).padding(.horizontal, margin + 5)
             }
-            TextEditor(text: Binding { file.source } set: { file.edit($0) }, selection: $file.selection)
-                .focused($focused)
-                // The file is plain text: the Format menu and bar insert Markdown instead.
-                .textInputFormattingControlVisibility(.hidden, for: .all)
-                .scrollContentBackground(.hidden)
-                .lineSpacing(Theme.lineSpacing)
-                #if os(macOS)
-                // The Mac editor ignores content margins, so pad the column instead.
-                .padding(.horizontal, margin)
-                #else
-                .contentMargins(.horizontal, margin, for: .scrollContent)
-                #endif
-                .autocorrectionDisabled()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
-                .accessibilityLabel(file.name)
+            NativeTextViewWrapper(
+                text: $file.text,
+                configuration: .emdee(margin: margin),
+                fontName: MarkdownFontName.system,
+                fontSize: Theme.bodySize,
+                documentId: file.url.absoluteString,
+                controller: controller
+            )
+            .accessibilityLabel(file.name)
         }
         .padding(.top, chrome == .mac ? 24 : 8)
         // Full-width scrolling with the text held to a centered 680 pt column.
         .onGeometryChange(for: CGFloat.self) { max(Theme.columnPadding, ($0.size.width - Theme.column) / 2) } action: { margin = $0 }
-        .task(id: file.text) {
+        .task(id: file.revision) {
             try? await Task.sleep(for: .seconds(1))
             if !Task.isCancelled { save() }
         }
         .onDisappear(perform: save)
         .focusedSceneValue(\.file, file)
+        .focusedSceneValue(\.editor, controller)
         .onChange(of: scenePhase) { if $1 != .active { save() } }
         #if os(macOS)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in save() }
@@ -58,14 +52,14 @@ struct FileView: View {
         } message: {
             Text(saveError ?? "")
         }
-        .modifier(FileChrome(file: file, chrome: chrome, focused: focused, endEditing: { focused = false }, subtitle: subtitle, openFile: openFile, back: back, sidebar: sidebar, format: file.format))
+        .modifier(FileChrome(file: file, chrome: chrome, editing: controller.isEditingAnything, endEditing: controller.endEditing, subtitle: subtitle, openFile: openFile, back: back, sidebar: sidebar, format: { $0.perform(on: controller, in: file.text) }))
     }
 
     /// Mac: "~/Developer/emdee · 77 words". Rail: "~/Developer/emdee · Edited 9:41 AM".
     private var subtitle: String {
         let folder = RecentFile.folder(of: file.url.path)
         if chrome == .rail { return [folder, recent?.when()].compactMap(\.self).joined(separator: " · ") }
-        let words = MarkdownText.wordCount(file.text)
+        let words = file.wordCount
         return "\(folder) · \(words) \(words == 1 ? "word" : "words")\(file.isDirty ? " · Edited" : "")"
     }
 
@@ -98,7 +92,7 @@ private struct FileHeader: View {
 private struct FileChrome: ViewModifier {
     let file: MarkdownFile
     let chrome: Chrome
-    let focused: Bool
+    let editing: Bool
     let endEditing: () -> Void
     let subtitle: String
     let openFile: () -> Void
@@ -128,7 +122,7 @@ private struct FileChrome: ViewModifier {
                 .navigationTitle(file.name)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    if focused {
+                    if editing {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("Done", systemImage: "checkmark", action: endEditing).buttonStyle(.glassProminent)
                         }
@@ -139,7 +133,7 @@ private struct FileChrome: ViewModifier {
                     }
                 }
                 .safeAreaInset(edge: .bottom) {
-                    if focused {
+                    if editing {
                         FormatBar(axis: .horizontal, apply: format)
                             .padding(.horizontal, 12)
                             .padding(.bottom, 8)
@@ -158,7 +152,7 @@ private struct FileChrome: ViewModifier {
             if let back {
                 RailButton("Recents", systemImage: "chevron.left", action: back)
             }
-            if focused {
+            if editing {
                 RailButton("Done", systemImage: "checkmark", prominent: true) { endEditing() }
                 FormatBar(axis: .vertical, apply: format)
             } else {
