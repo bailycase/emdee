@@ -3,14 +3,14 @@
     <channel>
         <title>emdee</title>
         <item>
-            <title>0.1.0</title>
-            <pubDate>Thu, 19 Nov 2026 03:39:20 +0000</pubDate>
+            <title>0.1.1</title>
+            <pubDate>Thu, 19 Nov 2026 03:51:00 +0000</pubDate>
             <link>https://github.com/bailycase/emdee</link>
-            <sparkle:version>1</sparkle:version>
-            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/bailycase/emdee/releases/download/v0.1.0/emdee.dmg" length="2548252" type="application/octet-stream" sparkle:edSignature="53L3fTzHbtcuyPjdicm5agHq8uGRFUifkWHdRkQ6k0bFcIdL6Pk8/Lv3gq6nEICW5QhAjnOhhGd/h9bemh1VBA=="/>
+            <enclosure url="https://github.com/bailycase/emdee/releases/download/v0.1.1/emdee.dmg" length="2548260" type="application/octet-stream" sparkle:edSignature="d714UaqPEq9nEiig1ZHMYLASIwoFDtg3Xgv45dRvoVPYllD0ecyIl+U86MUqSwXMd6HV1Rpvm8d8VdZ+cI4yCA=="/>
         </item>
     </channel>
 </rss>
